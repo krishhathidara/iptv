@@ -1,0 +1,16 @@
+[
+  {
+    "source_name": "IPTV-org Worldwide",
+    "url": "https://iptv-org.github.io/iptv/index.m3u",
+    "language_code": "und",
+    "country_code": "ZZ",
+    "category": "General"
+  },
+  {
+    "source_name": "licensed-provider",
+    "url": "https://provider.example/authorized-playlist.m3u",
+    "language_code": "en",
+    "country_code": "US",
+    "category": "General"
+  }
+]

@@ -1,0 +1,14 @@
+.git
+.env
+.venv
+venv
+__pycache__
+.pytest_cache
+*.pyc
+*.db
+*.sqlite3*
+*.log
+*.pid
+imports
+tests
+scripts

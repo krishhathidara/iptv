@@ -1,0 +1,30 @@
+# TV-only host. Create this Blueprint in your own Render account after pushing.
+# Free database expires after 30 days: upgrade before using for real customers.
+databases:
+  - name: nexastream-tv-db
+    plan: free
+    databaseName: nexastream_tv
+    user: nexastream_tv
+    ipAllowList: []
+
+services:
+  - type: web
+    name: nexastream-tv
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: nexastream-tv-db
+          property: connectionString
+      - key: ADMIN_API_KEY
+        generateValue: true
+      - key: TV_PUBLIC_MODE
+        value: "true"
+      - key: CORS_ORIGINS
+        value: '[]'
+      - key: SEED_PUBLIC_CATALOG
+        value: "false"

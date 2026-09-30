@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>NexaStream — Subscriber administration</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+  <link rel="stylesheet" href="/static/css/admin.css">
+  <script defer src="/static/js/admin.js"></script>
+</head>
+<body>
+  <nav class="admin-sidebar" aria-label="Administration navigation">
+    <a class="admin-brand" href="#overview">▣ IPTV Panel</a>
+    <a class="admin-nav-current" href="#overview">◉ Dashboard</a>
+    <a href="#newCustomer">＋ New Customer</a>
+    <a href="#customers">☷ My Customers</a>
+    <a class="admin-nav-bottom" href="/">↩ Back to catalog</a>
+  </nav>
+  <main class="admin-shell">
+    <header class="admin-header" id="overview"><div><span class="section-kicker">NexaStream · MAG / Stalker-style live TV</span><h1>Dashboard</h1><p>Manage customer activation, MAG portals and TV playlist links.</p><p class="remote-hint">Remote: use ↑ ↓ ← → to move, OK to select, and Back to cancel an action. Text fields need your TV's on-screen keyboard.</p></div></header>
+    <section class="admin-warning">For MAG devices, record the device MAC, create the account inactive, then Activate. Use the MAG external portal URL in the device’s portal settings. The TV browser and M3U URLs remain separate. <strong>A reported MAC can be spoofed; the private portal URL is also a credential.</strong> This is a trusted-LAN prototype, not a complete Ministra/Stalker server. Use only authorized streams; expiry/suspension cannot revoke copied upstream media URLs.</section>
+    <section class="admin-card">
+      <h2>Unlock administration</h2>
+      <p>Set <code>ADMIN_API_KEY</code> in the server environment to a random secret of at least 32 characters. The key stays in this tab's memory and is not stored by the browser.</p>
+      <div class="admin-row"><label class="field-label">Administrator key<input id="adminKey" type="password" autocomplete="off" aria-label="Administrator key"></label><button id="unlockButton" class="primary-button" type="button">Unlock</button><button id="lockButton" class="secondary-button" type="button">Lock</button></div>
+      <p id="adminStatus" role="status">Locked</p>
+    </section>
+    <div id="adminContent" hidden>
+      <section class="admin-stats" aria-label="Customer overview">
+        <div class="admin-stat"><span class="stat-icon" aria-hidden="true">♟</span><div><small>Total customers</small><strong id="customerCount">0</strong></div></div>
+        <div class="admin-stat"><span class="stat-icon stat-active" aria-hidden="true">✓</span><div><small>Active customers</small><strong id="activeCount">0</strong></div></div>
+        <div class="admin-stat"><span class="stat-icon stat-date" aria-hidden="true">▦</span><div><small>Today's date</small><strong id="todayDate"></strong></div></div>
+      </section>
+      <section class="admin-card" id="newCustomer">
+        <h2>New Customer</h2>
+        <form id="subscriberForm">
+          <div class="admin-fields">
+            <label class="field-label">Name<input id="subscriberName" required maxlength="255" autocomplete="off"></label>
+            <label class="field-label">Device MAC (required for MAG portal)<input id="subscriberMac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off"></label>
+            <label class="field-label">Duration (calendar months)<select id="subscriberMonths"><option value="1">1 month</option><option value="3">3 months</option><option value="6">6 months</option><option value="12">12 months</option><option value="custom">Other duration</option></select></label>
+            <label class="field-label" id="subscriberCustomLabel" hidden>Custom duration (1–120 months)<input id="subscriberCustomMonths" type="number" min="1" max="120" value="1" required disabled></label>
+            <label class="field-label">Notes (optional)<input id="subscriberNotes" maxlength="500" autocomplete="off"></label>
+          </div>
+          <label class="admin-check"><input id="subscriberActive" type="checkbox"><span>Activate immediately (otherwise select Activate after creating the account)</span></label>
+          <button class="primary-button" type="submit">Create customer and URLs</button>
+        </form>
+        <div id="newLink" class="admin-link" role="status" hidden></div>
+      </section>
+      <section class="admin-card" id="customers"><div class="admin-list-header"><h2>My Customers</h2><button id="refreshSubscribers" class="secondary-button" type="button">Refresh</button></div>
+        <label class="field-label admin-search">Find by name or MAC<input id="subscriberSearch" type="search" autocomplete="off" placeholder="Search customers or MAC addresses"></label>
+        <form id="subscriberAction" class="admin-action" hidden aria-labelledby="actionTitle">
+          <h3 id="actionTitle"></h3><p id="actionDescription"></p>
+          <label class="field-label" id="actionMonthsLabel">Months to add
+            <select id="actionMonthsPreset" aria-label="Months to add"><option value="1">1 month</option><option value="3">3 months</option><option value="6">6 months</option><option value="12">12 months</option><option value="custom">Other duration</option></select>
+          </label>
+          <label class="field-label" id="actionCustomLabel" hidden>Custom duration (1–120 months)<input id="actionCustomMonths" type="number" min="1" max="120" value="1" required disabled></label>
+          <label class="field-label" id="actionMacLabel" hidden>Customer MAC (leave empty to clear)<input id="actionMac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off" disabled></label>
+          <div class="subscriber-actions"><button id="confirmAction" class="primary-button" type="submit">Confirm</button><button id="cancelAction" class="secondary-button" type="button">Cancel</button></div>
+        </form>
+        <div id="subscriberList" role="status"></div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

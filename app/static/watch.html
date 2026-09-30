@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Cache-Control" content="no-store">
+  <title>NexaStream — TV portal</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+  <link rel="stylesheet" href="/static/css/watch.css">
+  <script defer src="/static/vendor/hls.min.js"></script>
+  <script defer src="/static/js/watch.js"></script>
+</head>
+<body>
+  <main class="watch-shell">
+    <header class="watch-header"><div><span class="section-kicker">NexaStream</span><h1>TV portal</h1><p>Use the remote's arrows to choose a title, OK to play, and Back to leave playback.</p></div><button id="refresh" class="secondary-button" type="button">Refresh list</button></header>
+    <p id="watchStatus" role="status">Loading your channels…</p>
+    <section class="watch-player" id="watchPlayer" hidden aria-label="Video player"><div class="watch-heading"><h2 id="watchTitle">Playing</h2><button id="closePlayer" class="secondary-button" type="button">Back to list</button></div><video id="watchVideo" controls playsinline></video><p id="playerStatus" role="status"></p></section>
+    <label class="watch-search">Find a channel or movie<input id="watchSearch" type="search" autocomplete="off" placeholder="Search titles"></label>
+    <div id="watchList" class="watch-list" aria-label="Channels and movies"></div>
+  </main>
+</body>
+</html>

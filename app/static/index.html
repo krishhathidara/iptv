@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07111f">
+  <meta name="description" content="Professional live TV and VOD catalog dashboard with built-in HLS playback.">
+  <title>NexaStream — IPTV Catalog</title>
+  <link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+  <script defer src="/static/vendor/hls.min.js"></script>
+  <script defer src="/static/js/dashboard.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="Primary navigation">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32"><path d="M8 5.5h16A4.5 4.5 0 0 1 28.5 10v12A4.5 4.5 0 0 1 24 26.5H8A4.5 4.5 0 0 1 3.5 22V10A4.5 4.5 0 0 1 8 5.5Z"/><path class="brand-play" d="m13 11 8 5-8 5V11Z"/></svg>
+        </span>
+        <span><strong>NexaStream</strong><small>Media console</small></span>
+      </div>
+
+      <nav class="primary-nav">
+        <p class="nav-label">Browse</p>
+        <button class="nav-item is-active" data-view-target="live" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m9 2 3 3 3-3M8 10h8M8 14h5"/></svg>
+          <span>Live TV</span><span class="nav-count" id="navLiveCount">0</span>
+        </button>
+        <button class="nav-item" data-view-target="india" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m9 2 3 3 3-3M8 10h8M8 14h5"/></svg>
+          <span>Indian TV</span><span class="nav-count" id="navIndiaCount">0</span>
+        </button>
+        <button class="nav-item" data-view-target="vod" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m10 8 6 4-6 4V8Z"/></svg>
+          <span>VOD Library</span><span class="nav-count" id="navVodCount">0</span>
+        </button>
+        <p class="nav-label nav-label-spaced">Manage</p>
+        <button class="nav-item" data-view-target="import" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <span>Import Sources</span>
+        </button>
+        <a class="nav-item" href="/admin" rel="noreferrer">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+          <span>Subscribers</span><span class="external-mark">↗</span>
+        </a>
+        <a class="nav-item" href="/docs" target="_blank" rel="noreferrer">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h10l4 4v14H5V3Z"/><path d="M14 3v5h5M8 12h8M8 16h6"/></svg>
+          <span>API Docs</span><span class="external-mark">↗</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-status">
+        <div class="status-row"><span class="status-dot"></span><span>API online</span></div>
+        <p>Metadata catalog and browser player</p>
+      </div>
+    </aside>
+
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+    <main class="main-content">
+      <header class="topbar">
+        <button class="icon-button mobile-menu" id="mobileMenuButton" type="button" aria-label="Open navigation">
+          <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <div class="topbar-title">
+          <span class="eyebrow" id="pageEyebrow">CATALOG</span>
+          <strong id="pageTitle">Live TV</strong>
+          <span class="tv-hint">Remote: arrows to browse · OK to play · Back to close</span>
+        </div>
+        <label class="global-search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          <input id="globalSearch" type="search" autocomplete="off" placeholder="Search live channels">
+          <kbd>Ctrl K</kbd>
+        </label>
+        <div class="demo-pill" id="demoPill" hidden><span></span>Demo mode</div>
+        <button class="avatar-button" type="button" title="Local administrator">LA</button>
+      </header>
+
+      <div class="content-area">
+        <section class="workspace is-active" id="liveView" data-view="live">
+          <div class="workspace-heading">
+            <div>
+              <p class="section-kicker">Live television</p>
+              <h1 id="liveHeading">Live channel library</h1>
+              <p id="liveSubtitle">Browse and play available streams by language, country, and category.</p>
+            </div>
+            <button class="secondary-button" id="refreshLiveButton" type="button">
+              <svg viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M18.5 9A7 7 0 0 0 6 7l-2 5m2 3a7 7 0 0 0 12.5 2l1.5-5"/></svg>
+              Refresh catalog
+            </button>
+          </div>
+
+          <div class="india-notice" id="indiaNotice" hidden>
+            <div><strong>Indian live TV from public, validated sources</strong><p>These streams are from the existing public catalog, not YuppTV. YuppTV's own lineup may require its account, subscription, and supported player; its streams are not included here.</p></div>
+            <a class="secondary-button" href="https://www.yupptv.com/livetv" target="_blank" rel="noopener noreferrer">Open YuppTV ↗</a>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card metric-accent"><span class="metric-icon"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m9 2 3 3 3-3"/></svg></span><div><small>Available channels</small><strong id="liveTotalMetric">0</strong><span>Active stream records</span></div></article>
+            <article class="metric-card"><span class="metric-icon purple"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></span><div><small>Languages</small><strong id="liveLanguageMetric">0</strong><span>Catalog groupings</span></div></article>
+            <article class="metric-card"><span class="metric-icon cyan"><svg viewBox="0 0 24 24"><path d="M5 21V4m0 1h12l-2 4 2 4H5"/></svg></span><div><small>Countries</small><strong id="liveCountryMetric">0</strong><span>Regional sources</span></div></article>
+            <article class="metric-card"><span class="metric-icon amber"><svg viewBox="0 0 24 24"><path d="M4 7h6l2 2h8v10H4V7Z"/></svg></span><div><small>Categories</small><strong id="liveCategoryMetric">0</strong><span>Content sections</span></div></article>
+          </div>
+
+          <section class="discovery-panel">
+            <div class="panel-heading"><div><h2>Browse by language</h2><p>Quickly focus the catalog on a preferred language.</p></div><button class="text-button" data-clear-live="language" type="button">Show all</button></div>
+            <div class="facet-strip" id="liveLanguageFacets"></div>
+          </section>
+
+          <section class="discovery-panel" aria-label="Live TV categories">
+            <div class="panel-heading"><div><h2>Browse by category</h2><p>News, Sports, Kids, Movies and every available live TV group.</p></div><button class="text-button" data-clear-live="category" type="button">Show all</button></div>
+            <div class="category-sections" id="liveCategoryFacets"></div>
+          </section>
+
+          <section class="catalog-panel">
+            <div class="catalog-toolbar">
+              <div class="toolbar-title"><h2 id="liveCollectionTitle">All live channels</h2><span id="liveResultCount">0 results</span><a class="playlist-export" id="playlistExportLink" href="/playlist.m3u" download="nexastream-live.m3u">Download TV playlist (M3U) ↗</a></div>
+              <div class="filter-row">
+                <label><span>Language</span><select id="liveLanguageFilter"><option value="">All languages</option></select></label>
+                <label><span>Country</span><select id="liveCountryFilter"><option value="">All countries</option></select></label>
+                <label><span>Category</span><select id="liveCategoryFilter"><option value="">All categories</option></select></label>
+                <label><span>Sort by</span><select id="liveSort"><option value="name:asc">Name A–Z</option><option value="name:desc">Name Z–A</option><option value="country:asc">Country</option><option value="language:asc">Language</option><option value="created_at:desc">Recently added</option></select></label>
+              </div>
+            </div>
+            <div class="catalog-grid channel-grid" id="liveGrid" aria-live="polite"></div>
+            <div class="pagination" id="livePagination"></div>
+          </section>
+        </section>
+        <section class="workspace" id="vodView" data-view="vod">
+          <div class="workspace-heading">
+            <div><p class="section-kicker">On demand</p><h1>VOD library</h1><p>Explore movies and shows by language, country, and media type.</p></div>
+            <button class="secondary-button" id="refreshVodButton" type="button"><svg viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/></svg>Refresh library</button>
+          </div>
+
+          <div class="metric-grid metric-grid-vod">
+            <article class="metric-card metric-accent"><span class="metric-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m10 8 6 4-6 4V8Z"/></svg></span><div><small>Playable VOD links</small><strong id="vodTotalMetric">0</strong><span>Direct URLs (not checked)</span></div></article>
+            <article class="metric-card"><span class="metric-icon purple"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></span><div><small>Languages</small><strong id="vodLanguageMetric">0</strong><span>Available audio metadata</span></div></article>
+            <article class="metric-card"><span class="metric-icon cyan"><svg viewBox="0 0 24 24"><path d="M5 21V4m0 1h12l-2 4 2 4H5"/></svg></span><div><small>Countries</small><strong id="vodCountryMetric">0</strong><span>Catalog regions</span></div></article>
+            <article class="metric-card"><span class="metric-icon amber"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4zM8 3v3m8-3v3M8 18v3m8-3v3"/></svg></span><div><small>Media types</small><strong id="vodTypeMetric">0</strong><span>Movies and shows</span></div></article>
+          </div>
+
+          <section class="discovery-panel vod-discovery">
+            <div class="panel-heading"><div><h2>Explore collections</h2><p>Browse by language and choose Movies or TV Shows.</p></div><button class="text-button" data-clear-vod="all" type="button">Reset filters</button></div>
+            <div class="collection-row"><span>Languages</span><div class="facet-strip compact" id="vodLanguageFacets"></div></div>
+            <div class="collection-row"><span>Countries</span><div class="facet-strip compact" id="vodCountryFacets"></div></div>
+            <div class="collection-row"><span>Types</span><div class="facet-strip compact" id="vodTypeFacets"></div></div>
+          </section>
+
+          <section class="catalog-panel vidsrc-panel">
+            <div class="catalog-toolbar">
+              <div class="toolbar-title"><div><h2>VidSrc movies &amp; TV</h2><p>Indexed IDs do not guarantee playback. Names are searchable after title enrichment. Provider-hosted iframe; availability and rights unverified. Information courtesy of IMDb (https://www.imdb.com). Used with permission.</p></div><span id="vidsrcResultCount">0 indexed IDs</span></div>
+              <div class="filter-row"><label><span>Type</span><select id="vidsrcTypeFilter"><option value="">Movies &amp; TV</option><option value="movie">Movies</option><option value="tv">TV Shows</option></select></label><button class="secondary-button" id="syncVidsrcButton" type="button">Sync VidSrc catalog</button></div>
+            </div>
+            <div class="catalog-grid vod-grid" id="vidsrcGrid" aria-live="polite"></div>
+            <div class="pagination" id="vidsrcPagination"></div>
+          </section>
+
+          <section class="catalog-panel imdb-panel">
+            <div class="catalog-toolbar">
+              <div class="toolbar-title"><div><h2>IMDb movie directory</h2><p>Local IMDb dataset subset for personal, non-commercial use. An ID match with VidSrc offers a third-party iframe, not verified full-movie playback or distribution rights. Information courtesy of IMDb (https://www.imdb.com). Used with permission.</p></div><span id="imdbResultCount">0 movie IDs</span></div>
+              <div class="filter-row"><label><span>Show</span><select id="imdbAvailabilityFilter"><option value="matched">Matched VidSrc IDs</option><option value="all">All indexed IMDb movies</option></select></label></div>
+            </div>
+            <div class="catalog-grid vod-grid" id="imdbGrid" aria-live="polite"></div>
+            <div class="pagination" id="imdbPagination"></div>
+          </section>
+
+          <section class="discovery-panel">
+            <div class="panel-heading"><div><h2>Add authorized VOD</h2><p>Paste JSON containing direct .m3u8, .mp4 or .webm URLs. One item per movie or playable TV episode; website and embed links are not media URLs.</p></div></div>
+            <form id="vodImportForm" class="vod-import-form">
+              <label><span>Provider name</span><input id="vodImportSource" required maxlength="255" value="My licensed VOD" autocomplete="off"></label>
+              <label><span>VOD items (JSON array)</span><textarea id="vodImportItems" required rows="5" spellcheck="false" placeholder='[{"title":"My Movie","stream_url":"https://media.example.org/movie.mp4","media_type":"movie","language_code":"en"}]'></textarea></label>
+              <button class="primary-button" id="vodImportButton" type="submit">Import VOD links</button>
+              <p id="vodImportResult" role="status" aria-live="polite"></p>
+            </form>
+          </section>
+
+          <section class="catalog-panel">
+            <div class="catalog-toolbar">
+              <div class="toolbar-title"><h2>Movies &amp; shows</h2><span id="vodResultCount">0 results</span></div>
+              <div class="filter-row">
+                <label><span>Language</span><select id="vodLanguageFilter"><option value="">All languages</option></select></label>
+                <label><span>Country</span><select id="vodCountryFilter"><option value="">All countries</option></select></label>
+                <label><span>Media type</span><select id="vodTypeFilter"><option value="">Movies &amp; shows</option></select></label>
+                <label><span>Sort by</span><select id="vodSort"><option value="title:asc">Title A–Z</option><option value="title:desc">Title Z–A</option><option value="year:desc">Newest year</option><option value="year:asc">Oldest year</option><option value="created_at:desc">Recently added</option></select></label>
+              </div>
+            </div>
+            <div class="catalog-grid vod-grid" id="vodGrid" aria-live="polite"></div>
+            <div class="pagination" id="vodPagination"></div>
+          </section>
+        </section>
+
+        <section class="workspace" id="importView" data-view="import">
+          <div class="workspace-heading"><div><p class="section-kicker">Catalog management</p><h1>Import stream sources</h1><p>Add an M3U file, remote playlist URL, or pasted playlist text.</p></div></div>
+          <div class="import-layout">
+            <section class="import-card">
+              <div class="import-card-heading"><span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></span><div><h2>Add a source</h2><p>Imports store only metadata and stream URLs.</p></div></div>
+              <div class="source-tabs" role="tablist">
+                <button class="source-tab is-active" data-import-mode="file" type="button">Upload file</button>
+                <button class="source-tab" data-import-mode="url" type="button">Remote URL</button>
+                <button class="source-tab" data-import-mode="text" type="button">Paste M3U</button>
+              </div>
+              <form id="importForm">
+                <div class="import-source-panel is-active" data-import-panel="file">
+                  <label class="dropzone" id="dropzone"><input id="playlistFile" name="file" type="file" accept=".m3u,.m3u8,audio/x-mpegurl"><svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L8 8m4-4 4 4M5 14v5h14v-5"/></svg><strong>Choose an M3U playlist</strong><span id="selectedFileName">or drag and drop a file here</span></label>
+                </div>
+                <div class="import-source-panel" data-import-panel="url">
+                  <label class="field-label">Remote playlist URL<input id="sourceUrl" type="url" placeholder="https://provider.example/authorized-playlist.m3u"></label>
+                  <label class="check-row compact-check"><input id="saveRemoteSource" type="checkbox" checked><span><strong>Save as a managed provider</strong><small>Store this feed so it can be refreshed later from the dashboard.</small></span></label>
+                  <label class="check-row compact-check"><input id="replaceMissing" type="checkbox" checked><span><strong>Deactivate channels removed by the provider</strong><small>Recommended for full playlist snapshots. Existing rows are preserved if a refresh fails.</small></span></label>
+                </div>
+                <div class="import-source-panel" data-import-panel="text"><label class="field-label">M3U playlist text<textarea id="rawM3u" rows="8" placeholder="#EXTM3U&#10;#EXTINF:-1,Example channel&#10;https://example.org/live.m3u8"></textarea></label></div>
+                <div class="form-grid">
+                  <label class="field-label">Source name<input id="sourceName" maxlength="255" value="dashboard-import" required></label>
+                  <label class="field-label">Default language<input id="defaultLanguage" maxlength="16" value="und" placeholder="en"></label>
+                  <label class="field-label">Default country<input id="defaultCountry" maxlength="8" value="ZZ" placeholder="US"></label>
+                  <label class="field-label">Default category<input id="defaultCategory" maxlength="128" value="Uncategorized"></label>
+                </div>
+                <label class="check-row"><input id="validateUrls" type="checkbox"><span><strong>Validate browser playback</strong><small>Slower; confirms an HLS manifest, current media segment, and browser CORS access.</small></span></label>
+                <button class="primary-button full-button" id="importButton" type="submit"><span>Import into catalog</span><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
+              </form>
+            </section>
+
+            <aside class="import-aside">
+              <section class="info-card"><div class="info-icon"><svg viewBox="0 0 24 24"><path d="M12 8v5m0 3h.01"/><circle cx="12" cy="12" r="9"/></svg></div><div><h3>Before importing</h3><p>Use sources you are authorized to access. Browser playback also requires the upstream server to allow cross-origin requests.</p></div></section>
+              <section class="import-result" id="importResult"><div class="empty-result"><svg viewBox="0 0 24 24"><path d="M5 3h10l4 4v14H5V3Z"/><path d="M14 3v5h5M8 12h8M8 16h6"/></svg><h3>Import activity</h3><p>Your latest import summary and failure log will appear here.</p></div></section>
+            </aside>
+          </div>
+          <section class="source-registry-card">
+            <div class="panel-heading"><div><h2>Managed playlist providers</h2><p>Refresh public or authorized remote feeds and track their active channel counts.</p></div><button class="secondary-button compact-button" id="refreshSourcesButton" type="button">Refresh list</button></div>
+            <div class="source-registry" id="sourceRegistry"><div class="source-registry-empty">No managed providers have been added.</div></div>
+          </section>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="player-modal" id="playerModal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="playerTitle">
+    <div class="player-backdrop" data-close-player></div>
+    <div class="player-dialog">
+      <button class="player-close" id="playerCloseButton" type="button" data-close-player aria-label="Close player">×</button>
+      <div class="video-stage">
+        <video id="videoPlayer" controls playsinline preload="auto"></video>
+        <iframe id="embedPlayer" title="VidSrc video player" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen referrerpolicy="no-referrer" hidden></iframe>
+        <div class="video-placeholder" id="videoPlaceholder"><span class="player-spinner"></span><strong>Preparing stream</strong><small id="playerStatus">Connecting to the source…</small><button class="primary-button" id="resumePlayerButton" type="button" hidden>Press to play</button></div>
+      </div>
+      <div class="player-details">
+        <div class="player-heading"><div><span class="live-indicator" id="playerKindBadge">LIVE</span><h2 id="playerTitle">Select a stream</h2><p id="playerMeta"></p></div><div class="player-actions"><button class="secondary-button compact-button" id="fullscreenButton" type="button">Full screen</button><button class="secondary-button compact-button" id="copyStreamButton" type="button">Copy stream URL</button></div></div>
+        <p class="player-description" id="playerDescription"></p>
+        <label class="source-selector" id="sourceSelectorWrap" hidden><span>Playback source</span><select id="sourceSelector"></select></label>
+        <div class="player-notice"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></svg><span>Live channels use validated links; user-imported VOD uses direct URLs. VidSrc content runs in a third-party iframe; availability and playback rights are not verified. Playback depends on the host, network, and your TV/browser.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+</body>
+</html>
