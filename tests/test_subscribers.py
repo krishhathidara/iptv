@@ -247,14 +247,16 @@ async def test_mag_portal_handshake_channels_playback_and_revocation(client, mon
 
 
 @pytest.mark.asyncio
-async def test_opt_in_mac_stalker_server_uses_registered_active_account(client, monkeypatch):
+async def test_opt_in_mac_stalker_server_uses_registered_active_account(client, monkeypatch, caplog):
     headers = {"X-Admin-Key": "long-admin-secret-for-subscriber-tests-1234567890"}
     monkeypatch.setattr(settings, "admin_api_key", headers["X-Admin-Key"])
     monkeypatch.setattr(settings, "tv_public_mode", True)
     monkeypatch.setattr(settings, "enable_mac_stalker_portal", False)
     mac = "AA:BB:CC:DD:EE:FF"
     query = {"type": "stb", "action": "handshake", "mac": mac}
-    paths = ("/portal.php", "/server/load.php", "/stalker_portal/portal.php", "/stalker_portal/server/load.php")
+    paths = ("/portal.php", "/server/load.php", "/server/portal.php",
+             "/stalker_portal/portal.php", "/stalker_portal/server/load.php",
+             "/stalker_portal/server/portal.php")
     for path in paths:
         assert (await client.get(path, params=query)).status_code == 404
     for path in ("/c/", "/c/index.html", "/stalker_portal/c/index.html"):
@@ -279,8 +281,23 @@ async def test_opt_in_mac_stalker_server_uses_registered_active_account(client, 
     handshake = await client.get(paths[0], params={"type": "stb", "action": "handshake"}, headers={"Cookie": "mac=AA%3ABB%3ACC%3ADD%3AEE%3AFF"})
     assert handshake.status_code == 200
     bearer = handshake.json()["js"]["token"]
+    assert (await client.get(paths[-1], params={"type": "stb", "action": "handshake", "mac": mac,
+                                                  "token": "", "JsHttpRequest": "1-xml"})).status_code == 200
     assert (await client.get(paths[1], params={"type": "itv", "action": "get_all_channels", "mac": mac})).status_code == 403
     auth = {"Authorization": f"Bearer {bearer}"}
+    assert (await client.get(paths[-1], params={"type": "stb", "action": "get_profile", "mac": mac,
+                                                  "token": bearer})).json()["js"]["mac"] == mac
+    assert "MAG request scope=shared endpoint=/stalker_portal/server/portal.php method=GET action=get_profile status=200" in caplog.text
+    assert mac not in caplog.text and bearer not in caplog.text
+    assert (await client.post(paths[2], data={"type": "stb", "action": "get_profile", "mac": mac,
+                                                  "token": bearer})).status_code == 200
+    assert "MAG request scope=shared endpoint=/server/portal.php method=POST action=get_profile status=200" in caplog.text
+    assert (await client.get(paths[0], params={"type": "stb", "action": "get_profile", "mac": mac,
+                                                  "token": "wrong"})).status_code == 403
+    assert (await client.get(paths[0], params={"type": "stb", "action": "get_profile", "mac": mac,
+                                                  "token": "wrong"}, headers=auth)).status_code == 403
+    assert (await client.get(paths[0], params={"type": "stb", "action": "get_profile", "mac": "11:22:33:44:55:66",
+                                                  "token": bearer})).status_code == 403
     assert (await client.get(paths[1], params={"type": "itv", "action": "get_profile", "mac": mac}, headers=auth)).status_code == 400
     await client.post("/import-m3u", headers=headers, json={"raw_m3u": (
         '#EXTM3U\n#EXTINF:-1 group-title="English News",Authorized News\nhttps://media.example/news.m3u8\n'
@@ -394,6 +411,11 @@ async def test_existing_customer_private_stalker_server_supports_portal_php_with
                                headers={"Cookie": "mac=00%3A1A%3A79%3A67%3ACB%3A47"})
     assert cookie.status_code == 200
     bearer = cookie.json()["js"]["token"]
+    assert (await client.get(private + "/server/portal.php", params={"type": "stb", "action": "get_profile",
+                                                                    "mac": mac, "token": bearer})).status_code == 200
+    assert (await client.get(private + "/stalker_portal/server/portal.php",
+                             params={"type": "stb", "action": "get_profile", "mac": mac,
+                                     "token": bearer})).status_code == 200
     assert (await client.get(private + "/stalker_portal/server/load.php", params={
         "type": "stb", "action": "get_profile", "mac": mac,
     }, headers={"Authorization": f"Bearer {bearer}"})).json()["js"]["mac"] == mac

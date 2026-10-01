@@ -149,6 +149,18 @@ PUBLIC_ASSETS = {
     "/static/js/watch.js", "/static/js/mag.js", "/static/vendor/hls.min.js",
     "/static/img/favicon.svg",
 }
+SHARED_STALKER_PATHS = {
+    "/portal.php", "/server/load.php", "/server/portal.php",
+    "/stalker_portal/portal.php", "/stalker_portal/server/load.php",
+    "/stalker_portal/server/portal.php",
+}
+PRIVATE_STALKER_API_PATH = re.compile(
+    r"/stalker/[A-Za-z0-9_-]{32,128}/(?P<endpoint>portal\.php|server/(?:load|portal)\.php|stalker_portal/(?:portal\.php|server/(?:load|portal)\.php))"
+)
+STALKER_ACTIONS = {
+    "handshake", "get_profile", "get_main_info", "get_genres", "get_all_channels",
+    "get_ordered_list", "get_categories", "create_link",
+}
 
 
 @app.middleware("http")
@@ -165,10 +177,8 @@ async def restrict_public_tv(request: Request, call_next):
             or (re.fullmatch(r"/stalker/[A-Za-z0-9_-]{32,128}/c/(?:index\.html)?", path) and method in {"GET", "HEAD"})
             or (path in {"/c/", "/c/index.html", "/stalker_portal/c/", "/stalker_portal/c/index.html"}
                 and method in {"GET", "HEAD"} and settings.enable_mac_stalker_portal)
-            or (re.fullmatch(r"/stalker/[A-Za-z0-9_-]{32,128}/server/load\.php", path) and method in {"GET", "POST"})
-            or (re.fullmatch(r"/stalker/[A-Za-z0-9_-]{32,128}/(?:portal\.php|stalker_portal/(?:portal\.php|server/load\.php))", path)
-                and method in {"GET", "POST"})
-            or (path in {"/portal.php", "/server/load.php", "/stalker_portal/portal.php", "/stalker_portal/server/load.php"}
+            or (PRIVATE_STALKER_API_PATH.fullmatch(path) and method in {"GET", "POST"})
+            or (path in SHARED_STALKER_PATHS
                 and method in {"GET", "POST"} and settings.enable_mac_stalker_portal)
             or (path in {"/import-m3u", "/vod/import"} and method == "POST")
             or (path == "/admin/subscribers" and method in {"GET", "POST"})
@@ -183,7 +193,18 @@ async def restrict_public_tv(request: Request, call_next):
             supplied = request.headers.get("x-admin-key", "")
             if not settings.admin_api_key or not secrets.compare_digest(supplied, settings.admin_api_key):
                 return Response(status_code=401, headers={"WWW-Authenticate": "ApiKey"})
-    return await call_next(request)
+    response = await call_next(request)
+    private_match = PRIVATE_STALKER_API_PATH.fullmatch(request.url.path)
+    if request.method in {"GET", "POST"} and (request.url.path in SHARED_STALKER_PATHS or private_match):
+        # Uvicorn access logging is off: log only fixed labels, never URL queries,
+        # MACs, private path tokens, headers, or upstream stream URLs.
+        action = getattr(request.state, "stalker_action", request.query_params.get("action", ""))
+        logger.info("MAG request scope=%s endpoint=%s method=%s action=%s status=%d",
+                    "shared" if request.url.path in SHARED_STALKER_PATHS else "private",
+                    request.url.path if request.url.path in SHARED_STALKER_PATHS else "/" + private_match.group("endpoint"),
+                    request.method, action if action in STALKER_ACTIONS else "other",
+                    response.status_code)
+    return response
 
 DatabaseSession = Annotated[AsyncSession, Depends(get_db)]
 
@@ -801,6 +822,7 @@ async def _stalker_params(request: Request) -> dict[str, str]:
     if request.method == "POST":
         form = await request.form()
         params.update({key: str(value) for key, value in form.items() if isinstance(value, str)})
+    request.state.stalker_action = params.get("action", "")
     return params
 
 
@@ -836,8 +858,10 @@ async def _stalker_genres(session: AsyncSession) -> dict[str, str]:
 
 @app.api_route("/portal.php", methods=["GET", "POST"], include_in_schema=False)
 @app.api_route("/server/load.php", methods=["GET", "POST"], include_in_schema=False)
+@app.api_route("/server/portal.php", methods=["GET", "POST"], include_in_schema=False)
 @app.api_route("/stalker_portal/portal.php", methods=["GET", "POST"], include_in_schema=False)
 @app.api_route("/stalker_portal/server/load.php", methods=["GET", "POST"], include_in_schema=False)
+@app.api_route("/stalker_portal/server/portal.php", methods=["GET", "POST"], include_in_schema=False)
 async def mac_stalker_api(request: Request, session: DatabaseSession) -> Response:
     """Opt-in shared Stalker entry point for players configured with server + MAC."""
     if not settings.enable_mac_stalker_portal:
@@ -859,7 +883,9 @@ async def mac_stalker_api(request: Request, session: DatabaseSession) -> Respons
 @app.api_route("/stalker/{token}/portal.php", methods=["GET", "POST"], include_in_schema=False)
 @app.api_route("/stalker/{token}/stalker_portal/portal.php", methods=["GET", "POST"], include_in_schema=False)
 @app.api_route("/stalker/{token}/stalker_portal/server/load.php", methods=["GET", "POST"], include_in_schema=False)
+@app.api_route("/stalker/{token}/stalker_portal/server/portal.php", methods=["GET", "POST"], include_in_schema=False)
 @app.api_route("/stalker/{token}/server/load.php", methods=["GET", "POST"], include_in_schema=False)
+@app.api_route("/stalker/{token}/server/portal.php", methods=["GET", "POST"], include_in_schema=False)
 async def stalker_api(token: str, request: Request, session: DatabaseSession) -> Response:
     """Private Stalker entry points for players configured with a tokenized server + MAC."""
     subscriber = await active_subscriber(token, session)
@@ -879,6 +905,12 @@ async def _stalker_response(subscriber: Subscriber, request: Request, session: A
 
     authorization = request.headers.get("authorization", "")
     bearer = authorization[7:] if authorization.lower().startswith("bearer ") else None
+    # Some native players forward the issued token as a query/form parameter.
+    # Never accept two different session identities in one request.
+    param_token = params.get("token")
+    if bearer and param_token and not secrets.compare_digest(bearer, param_token):
+        raise HTTPException(status_code=403, detail="Conflicting MAG session tokens")
+    bearer = bearer or param_token
     if not valid_session(subscriber, mac, bearer):
         raise HTTPException(status_code=403, detail="MAG session required; handshake again")
     if (params.get("type"), action) not in {
