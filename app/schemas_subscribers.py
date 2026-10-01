@@ -71,3 +71,25 @@ class SubscriberRotated(BaseModel):
     playlist_url: str
     portal_url: str
     mag_portal_url: str
+
+
+class PortalCheckRequest(BaseModel):
+    token: str = Field(pattern=r"^[A-Za-z0-9_-]{32,128}$")
+    mac_address: str
+
+    @field_validator("mac_address")
+    @classmethod
+    def validate_mac(cls, value: str) -> str:
+        mac = SubscriberCreate.validate_mac(value)
+        if mac is None:
+            raise ValueError("A device MAC is required")
+        return mac
+
+
+class PortalCheckResponse(BaseModel):
+    id: int
+    name: str
+    is_active: bool
+    expires_at: datetime
+    mac_matches: bool
+    portal_origin: str

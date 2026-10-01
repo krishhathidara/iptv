@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     demo_channel_count: int = Field(default=6, ge=6, le=100_000)
     seed_public_catalog: bool = False
     tv_public_mode: bool = False
+    # MAC-only Stalker players have no private URL credential. Opt in deliberately:
+    # a reported MAC can be spoofed and grants access to this catalog.
+    enable_mac_stalker_portal: bool = False
     public_catalog_name: str = "IPTV-org Worldwide"
     public_catalog_url: str = "https://iptv-org.github.io/iptv/index.m3u"
 

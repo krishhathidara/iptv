@@ -9,6 +9,7 @@ aside p { color: #aebdc7; line-height: 1.4; }
 #message { color: #f0be75; margin: 18px 0; }
 ul { list-style: none; padding: 0; margin: 0; }
 li { margin: 8px 0; }
+#liveTab, #movieTab { width: 49%; display: inline-block; margin-bottom: 8px; }
 #loadMore { margin-top: 18px; }
 button { width: 100%; padding: 18px; background: #152938; color: #f3f7f8; border: 1px solid #19584d; border-radius: 9px; text-align: left; font: inherit; }
 button:focus, button.selected { outline: 4px solid #2cddac; background: #145b50; }

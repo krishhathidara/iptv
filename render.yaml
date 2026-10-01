@@ -24,6 +24,9 @@ services:
         generateValue: true
       - key: TV_PUBLIC_MODE
         value: "true"
+      # Shared Server + MAC and external MAG page. MACs can be spoofed; see README.
+      - key: ENABLE_MAC_STALKER_PORTAL
+        value: "true"
       - key: CORS_ORIGINS
         value: '[]'
       - key: SEED_PUBLIC_CATALOG

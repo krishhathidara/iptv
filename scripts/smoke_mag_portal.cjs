@@ -7,18 +7,20 @@ const vm = require("node:vm");
 let activeElement;
 const requests = [];
 const playback = [];
+let nextFailure = 0;
 const elements = new Map();
 function element() {
   return {
     textContent: "", hidden: false, children: [],
     appendChild(child) { this.children.push(child); },
+    set innerHTML(value) { if (value === "") this.children = []; },
     querySelector(tag) { return this.getElementsByTagName(tag)[0] || null; },
     getElementsByTagName(tag) { return this.children.flatMap((child) =>
       (child.tag === tag ? [child] : []).concat(child.getElementsByTagName?.(tag) || [])); },
     focus() { activeElement = this; },
   };
 }
-for (const id of ["message", "channels", "playing", "loadMore"]) elements.set(id, element());
+for (const id of ["message", "channels", "playing", "loadMore", "liveTab", "movieTab"]) elements.set(id, element());
 const list = elements.get("channels");
 const loadMore = elements.get("loadMore");
 loadMore.hidden = true;
@@ -32,12 +34,20 @@ XMLHttpRequest.prototype.send = function () {
   const url = new URL(this.url, "http://127.0.0.1:8000");
   const action = url.searchParams.get("action");
   requests.push({ action, url, headers: this.headers });
+  if (nextFailure) {
+    this.status = nextFailure;
+    nextFailure = 0;
+    this.readyState = 4;
+    this.onreadystatechange();
+    return;
+  }
   let js;
   if (action === "handshake") js = { token: "test-session" };
   else if (action === "get_ordered_list") {
     const page = Number(url.searchParams.get("p"));
-    js = { data: titles.slice((page - 1) * 50, page * 50), total_items: titles.length };
-  } else if (action === "create_link") js = { cmd: "ffmpeg https://media.example/test.m3u8" };
+    const available = url.searchParams.get("type") === "vod" ? [{ name: "Test Movie", cmd: "ffmpeg vod_1" }] : titles;
+    js = { data: available.slice((page - 1) * 50, page * 50), total_items: available.length };
+  } else if (action === "create_link") js = { cmd: url.searchParams.get("type") === "vod" ? "ffmpeg https://media.example/movie.mp4" : "ffmpeg https://media.example/test.m3u8" };
   else throw Error(`Unexpected action: ${action}`);
   this.status = 200;
   this.readyState = 4;
@@ -76,4 +86,45 @@ assert.equal(playback[0], "ffmpeg https://media.example/test.m3u8");
 assert.match(elements.get("playing").textContent, /Playing: Test 1/);
 sandbox.document.onkeydown({ keyCode: 27, preventDefault() {} });
 assert.equal(elements.get("playing").textContent, "Choose a channel to start playing.");
-console.log("PASS: MAG mock handshake, pagination, MAC/session headers, playback and Back key");
+elements.get("movieTab").onclick();
+assert.equal(requests[4].url.searchParams.get("type"), "vod");
+assert.equal(list.getElementsByTagName("button").length, 1);
+list.getElementsByTagName("button")[0].onclick();
+assert.equal(requests[5].url.searchParams.get("type"), "vod");
+assert.equal(playback[1], "ffmpeg https://media.example/movie.mp4");
+elements.get("liveTab").onclick();
+assert.equal(requests[6].url.searchParams.get("type"), "itv");
+const minimalElements = new Map();
+for (const id of elements.keys()) minimalElements.set(id, element());
+vm.runInNewContext(script, {
+  window: { innerWidth: 1280, gSTB: { GetDeviceMacAddress: () => "aa:bb:cc:dd:ee:ff", Play(command) { playback.push(command); } } },
+  document: { getElementById(id) { return minimalElements.get(id); }, createElement(tag) { return Object.assign(element(), { tag }); },
+    get activeElement() { return activeElement; } },
+  location: { pathname: "/stalker/secret/c/index.html" }, XMLHttpRequest, URL, Math, JSON, String, Array, Number,
+}, { filename: "mag.js" });
+assert.equal(requests[7].action, "handshake");
+assert.equal(requests[8].action, "get_ordered_list");
+minimalElements.get("channels").getElementsByTagName("button")[0].onclick();
+assert.equal(playback[2], "ffmpeg https://media.example/test.m3u8");
+nextFailure = 403;
+minimalElements.get("movieTab").onclick();
+assert.match(minimalElements.get("message").textContent, /STBEmu profile MAC.*403|403.*STBEmu profile MAC/);
+nextFailure = 404;
+minimalElements.get("liveTab").onclick();
+assert.match(minimalElements.get("message").textContent, /404.*private URL/);
+const sharedElements = new Map();
+for (const id of elements.keys()) sharedElements.set(id, element());
+const sharedStart = requests.length;
+vm.runInNewContext(script, {
+  window: sandbox.window,
+  document: { getElementById(id) { return sharedElements.get(id); }, createElement(tag) { return Object.assign(element(), { tag }); },
+    get activeElement() { return activeElement; } },
+  location: { pathname: "/c/index.html" }, XMLHttpRequest, URL, Math, JSON, String, Array, Number,
+}, { filename: "mag.js" });
+assert.equal(requests[sharedStart].url.pathname, "/server/load.php");
+assert.equal(requests[sharedStart].headers["X-Device-Mac"], "AA:BB:CC:DD:EE:FF");
+assert.equal(requests[sharedStart + 1].url.pathname, "/server/load.php");
+sharedElements.get("movieTab").onclick();
+sharedElements.get("channels").getElementsByTagName("button")[0].onclick();
+assert.equal(playback.at(-1), "ffmpeg https://media.example/movie.mp4");
+console.log("PASS: MAG mock handshake, pagination, MAC/session headers, live and movie playback, Back key");

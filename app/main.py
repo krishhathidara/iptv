@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import unquote
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,16 +19,17 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from sqlalchemy import asc, case, delete, desc, exists, func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile
 
 from app.config import settings
 from app.database import AsyncSessionLocal, engine, get_db, init_db
 from app.models import Channel, ImdbMovie, PlaylistSource, Subscriber, VidsrcTitle, Vod
-from app.schemas_subscribers import SubscriberCreate, SubscriberCreated, SubscriberResponse, SubscriberRotated, SubscriberUpdate
+from app.schemas_subscribers import (PortalCheckRequest, PortalCheckResponse, SubscriberCreate,
+                                     SubscriberCreated, SubscriberResponse, SubscriberRotated, SubscriberUpdate)
 from app.services.subscribers import add_months, new_token, token_hash, utc_datetime
-from app.services.mag_portal import issue_session, matching_mac, valid_session
+from app.services.mag_portal import issue_session, matching_mac, normalized_mac, valid_session
 from app.schemas import (
     ChannelPage,
     ChannelPlaybackFailureRequest,
@@ -152,7 +155,7 @@ PUBLIC_ASSETS = {
 async def restrict_public_tv(request: Request, call_next):
     if settings.tv_public_mode:
         path, method = request.url.path, request.method
-        if method == "OPTIONS" and path.startswith(("/admin/subscribers", "/import-m3u")):
+        if method == "OPTIONS" and path.startswith(("/admin/subscribers", "/import-m3u", "/vod/import")):
             return Response(status_code=404)
         allowed = (
             (path in {"/", "/health"} and method in {"GET", "HEAD"})
@@ -160,15 +163,23 @@ async def restrict_public_tv(request: Request, call_next):
             or (re.fullmatch(r"/watch/[A-Za-z0-9_-]{32,128}", path) and method in {"GET", "HEAD"})
             or (re.fullmatch(r"/subscribers/playlist/[A-Za-z0-9_-]{32,128}\.m3u", path) and method in {"GET", "HEAD"})
             or (re.fullmatch(r"/stalker/[A-Za-z0-9_-]{32,128}/c/(?:index\.html)?", path) and method in {"GET", "HEAD"})
+            or (path in {"/c/", "/c/index.html", "/stalker_portal/c/", "/stalker_portal/c/index.html"}
+                and method in {"GET", "HEAD"} and settings.enable_mac_stalker_portal)
             or (re.fullmatch(r"/stalker/[A-Za-z0-9_-]{32,128}/server/load\.php", path) and method in {"GET", "POST"})
-            or (path == "/import-m3u" and method == "POST")
+            or (re.fullmatch(r"/stalker/[A-Za-z0-9_-]{32,128}/(?:portal\.php|stalker_portal/(?:portal\.php|server/load\.php))", path)
+                and method in {"GET", "POST"})
+            or (path in {"/portal.php", "/server/load.php", "/stalker_portal/portal.php", "/stalker_portal/server/load.php"}
+                and method in {"GET", "POST"} and settings.enable_mac_stalker_portal)
+            or (path in {"/import-m3u", "/vod/import"} and method == "POST")
             or (path == "/admin/subscribers" and method in {"GET", "POST"})
+            or (path == "/admin/subscribers/portal-check" and method == "POST")
+            or (path == "/admin/subscribers/portal-settings" and method == "GET")
             or (re.fullmatch(r"/admin/subscribers/[1-9][0-9]*", path) and method == "PATCH")
             or (re.fullmatch(r"/admin/subscribers/[1-9][0-9]*/rotate", path) and method == "POST")
         )
         if not allowed:
             return Response(status_code=404)
-        if path == "/import-m3u" and method == "POST":
+        if path in {"/import-m3u", "/vod/import"} and method == "POST":
             supplied = request.headers.get("x-admin-key", "")
             if not settings.admin_api_key or not secrets.compare_digest(supplied, settings.admin_api_key):
                 return Response(status_code=401, headers={"WWW-Authenticate": "ApiKey"})
@@ -206,6 +217,15 @@ def public_base_url() -> str:
     return base.rstrip("/")
 
 
+@app.get("/admin/subscribers/portal-settings", tags=["admin"])
+async def portal_settings(response: Response, _: AdminAccess) -> dict[str, str | bool]:
+    """Expose the configured shared URLs to the operator, never infer a host from request headers."""
+    response.headers["Cache-Control"] = "no-store"
+    base = public_base_url()
+    return {"enabled": settings.enable_mac_stalker_portal,
+            "server_url": base, "mag_portal_url": f"{base}/c/index.html"}
+
+
 @app.get("/", include_in_schema=False)
 async def dashboard() -> FileResponse:
     return FileResponse(STATIC_DIRECTORY / ("tv.html" if settings.tv_public_mode else "index.html"))
@@ -231,8 +251,26 @@ async def subscriber_mag_portal(token: str, session: DatabaseSession) -> FileRes
     return FileResponse(STATIC_DIRECTORY / "mag.html", headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
 
+@app.get("/c/", include_in_schema=False)
+@app.get("/c/index.html", include_in_schema=False)
+@app.get("/stalker_portal/c/", include_in_schema=False)
+@app.get("/stalker_portal/c/index.html", include_in_schema=False)
+async def shared_mag_portal() -> FileResponse:
+    """Common MAG web page. No catalog access until the reported MAC handshakes."""
+    if not settings.enable_mac_stalker_portal:
+        raise HTTPException(status_code=404, detail="Portal not enabled")
+    return FileResponse(STATIC_DIRECTORY / "mag.html", headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+
 @app.get("/health", tags=["system"])
-async def health() -> dict[str, str]:
+async def health(session: DatabaseSession) -> dict[str, str]:
+    # Select every subscriber column, as the customer list does. Selecting only
+    # the ID misses schema drift (create_all does not add missing columns).
+    try:
+        await session.scalar(select(Subscriber).limit(1))
+    except SQLAlchemyError:
+        logger.exception("Customer database readiness check failed")
+        raise HTTPException(status_code=503, detail="Customer database unavailable") from None
     return {"status": "ok", "mode": "demo" if settings.demo_mode else "standard"}
 
 
@@ -758,16 +796,80 @@ async def active_subscriber(token: str, session: AsyncSession) -> Subscriber:
     return subscriber
 
 
-@app.api_route("/stalker/{token}/server/load.php", methods=["GET", "POST"], include_in_schema=False)
-async def stalker_api(token: str, request: Request, session: DatabaseSession) -> Response:
-    """A limited Stalker-style live-TV API, not Ministra middleware or a stream proxy."""
-    subscriber = await active_subscriber(token, session)
+async def _stalker_params(request: Request) -> dict[str, str]:
     params = dict(request.query_params)
     if request.method == "POST":
         form = await request.form()
         params.update({key: str(value) for key, value in form.items() if isinstance(value, str)})
+    return params
+
+
+def _request_mac(request: Request, params: dict[str, str]) -> str | None:
+    # Reject conflicting identities rather than accepting whichever field came first.
+    # Stalker clients often percent-encode colons in the Cookie header.
+    cookie_mac = request.cookies.get("mac")
+    values = [params.get("mac"), unquote(cookie_mac) if cookie_mac else None,
+              request.headers.get("x-device-mac")]
+    supplied = [value for value in values if value]
+    macs = [normalized_mac(value) for value in supplied]
+    return macs[0] if macs and all(value == macs[0] for value in macs) else None
+
+
+async def _stalker_genres(session: AsyncSession) -> dict[str, str]:
+    categories = (await session.scalars(
+        select(Channel.category).where(Channel.is_active.is_(True)).distinct()
+    )).all()
+    groups = sorted({part.strip() for category in categories
+                     for part in (category or "Uncategorized").split(";") if part.strip()})
+    # Stable numeric IDs match the genre references on channels, even after imports.
+    ids: dict[str, str] = {}
+    used: set[str] = set()
+    for group in groups:
+        candidate = int.from_bytes(hashlib.sha256(group.encode("utf-8")).digest()[:4], "big") & 0x7FFFFFFF
+        genre_id = str(candidate or 1)
+        while genre_id in used:
+            genre_id = str((int(genre_id) % 0x7FFFFFFF) + 1)
+        ids[group] = genre_id
+        used.add(genre_id)
+    return ids
+
+
+@app.api_route("/portal.php", methods=["GET", "POST"], include_in_schema=False)
+@app.api_route("/server/load.php", methods=["GET", "POST"], include_in_schema=False)
+@app.api_route("/stalker_portal/portal.php", methods=["GET", "POST"], include_in_schema=False)
+@app.api_route("/stalker_portal/server/load.php", methods=["GET", "POST"], include_in_schema=False)
+async def mac_stalker_api(request: Request, session: DatabaseSession) -> Response:
+    """Opt-in shared Stalker entry point for players configured with server + MAC."""
+    if not settings.enable_mac_stalker_portal:
+        raise HTTPException(status_code=404, detail="Portal not enabled")
+    params = await _stalker_params(request)
+    mac = _request_mac(request, params)
+    if not mac:
+        raise HTTPException(status_code=403, detail="A registered MAC is required")
+    # A duplicate registered MAC must never arbitrarily select another account.
+    matches = (await session.scalars(select(Subscriber).where(Subscriber.mac_address == mac).limit(2))).all()
+    if len(matches) != 1:
+        raise HTTPException(status_code=403, detail="MAC is not uniquely registered")
+    subscriber = matches[0]
+    if not subscriber.is_active or utc_datetime(subscriber.expires_at) <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=403, detail="Account inactive or expired")
+    return await _stalker_response(subscriber, request, session, params)
+
+
+@app.api_route("/stalker/{token}/portal.php", methods=["GET", "POST"], include_in_schema=False)
+@app.api_route("/stalker/{token}/stalker_portal/portal.php", methods=["GET", "POST"], include_in_schema=False)
+@app.api_route("/stalker/{token}/stalker_portal/server/load.php", methods=["GET", "POST"], include_in_schema=False)
+@app.api_route("/stalker/{token}/server/load.php", methods=["GET", "POST"], include_in_schema=False)
+async def stalker_api(token: str, request: Request, session: DatabaseSession) -> Response:
+    """Private Stalker entry points for players configured with a tokenized server + MAC."""
+    subscriber = await active_subscriber(token, session)
+    return await _stalker_response(subscriber, request, session, await _stalker_params(request))
+
+
+async def _stalker_response(subscriber: Subscriber, request: Request, session: AsyncSession,
+                            params: dict[str, str]) -> Response:
     action = params.get("action", "")
-    mac = matching_mac(subscriber, params.get("mac") or request.cookies.get("mac") or request.headers.get("x-device-mac"))
+    mac = matching_mac(subscriber, _request_mac(request, params))
     if mac is None:
         raise HTTPException(status_code=403, detail="A matching registered MAG MAC is required")
     headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
@@ -779,33 +881,91 @@ async def stalker_api(token: str, request: Request, session: DatabaseSession) ->
     bearer = authorization[7:] if authorization.lower().startswith("bearer ") else None
     if not valid_session(subscriber, mac, bearer):
         raise HTTPException(status_code=403, detail="MAG session required; handshake again")
-    if params.get("type") != "itv" and not (params.get("type") == "stb" and action == "get_profile"):
+    if (params.get("type"), action) not in {
+        ("stb", "get_profile"), ("account_info", "get_main_info"),
+        ("itv", "get_genres"), ("itv", "get_all_channels"),
+        ("itv", "get_ordered_list"), ("itv", "create_link"),
+        ("vod", "get_categories"), ("vod", "get_ordered_list"), ("vod", "create_link"),
+    }:
         raise HTTPException(status_code=400, detail="Unsupported MAG action")
 
     data: Any
     if action == "get_profile":
         data = {"id": subscriber.id, "name": subscriber.name, "mac": mac, "status": "active"}
+    elif action == "get_main_info":
+        data = {"status": "active", "end_date": utc_datetime(subscriber.expires_at).isoformat()}
     elif action == "get_genres":
-        data = [{"id": "all", "title": "All channels"}]
+        group_ids = await _stalker_genres(session)
+        data = [{"id": "*", "title": "All channels", "alias": "all", "censored": "0"}] + [
+            {"id": genre_id, "title": group, "alias": group, "censored": "0"}
+            for group, genre_id in group_ids.items()
+        ]
+    elif params["type"] == "vod" and action == "get_categories":
+        data = [{"id": "*", "title": "All movies", "alias": "all"}]
     elif action in ("get_all_channels", "get_ordered_list"):
-        query = select(Channel.id, Channel.name, Channel.logo_url).where(Channel.is_active.is_(True)).order_by(Channel.normalized_name, Channel.id)
+        if params["type"] == "vod":
+            try:
+                page = int(params.get("p", "1"))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid page") from None
+            if not 0 <= page <= 100000:
+                raise HTTPException(status_code=400, detail="Invalid page")
+            page = max(1, page)
+            filters = [Vod.is_active.is_(True), Vod.media_type == "movie"]
+            rows = (await session.execute(
+                select(Vod.id, Vod.title, Vod.poster_path).where(*filters)
+                .order_by(Vod.normalized_title, Vod.id).limit(50).offset((page - 1) * 50)
+            )).all()
+            data = {"data": [{"id": str(vod_id), "name": title, "title": title,
+                              "screenshot_uri": poster or "", "cmd": f"ffmpeg vod_{vod_id}"}
+                             for vod_id, title, poster in rows],
+                    "total_items": await session.scalar(select(func.count(Vod.id)).where(*filters)) or 0,
+                    "max_page_items": 50, "cur_page": page}
+            return Response(content=json.dumps({"js": data}), media_type="application/json", headers=headers)
+        group_ids = await _stalker_genres(session)
+        filters = [Channel.is_active.is_(True)]
+        genre = params.get("genre", params.get("category", "*"))
+        if action == "get_ordered_list" and genre not in {"*", "all", ""}:
+            category = next((name for name, genre_id in group_ids.items() if genre_id == genre), genre)
+            filters.append(_live_category_filter(category))
+        else:
+            category = None
+        query = select(Channel.id, Channel.name, Channel.logo_url, Channel.category, Channel.tvg_id).where(*filters).order_by(Channel.normalized_name, Channel.id)
         if action == "get_ordered_list":
             try:
                 page = int(params.get("p", "1"))
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid page") from None
-            if not 1 <= page <= 100000:
+            if not 0 <= page <= 100000:
                 raise HTTPException(status_code=400, detail="Invalid page")
+            # Some Stalker clients request p=0 for the first page.
+            page = max(1, page)
             query = query.limit(50).offset((page - 1) * 50)
         rows = (await session.execute(query)).all()
-        channels = [{"id": channel_id, "name": name, "number": index + 1,
-                     "logo": logo or "", "cmd": f"ffmpeg channel_{channel_id}", "tv_genre_id": "all"}
-                    for index, (channel_id, name, logo) in enumerate(rows, start=(page - 1) * 50 if action == "get_ordered_list" else 0)]
+        channels = []
+        for index, (channel_id, name, logo, channel_category, tvg_id) in enumerate(
+            rows, start=(page - 1) * 50 if action == "get_ordered_list" else 0
+        ):
+            selected_group = category or (channel_category or "Uncategorized").split(";")[0].strip()
+            channels.append({"id": str(channel_id), "name": name, "number": str(index + 1),
+                             "logo": logo or "", "cmd": f"ffmpeg channel_{channel_id}",
+                             "use_http_tmp_link": "1", "xmltv_id": tvg_id or "", "tv_archive_duration": 0,
+                             "tv_genre_id": group_ids.get(selected_group, "*")})
         if action == "get_ordered_list":
-            data = {"data": channels, "total_items": await session.scalar(select(func.count(Channel.id)).where(Channel.is_active.is_(True))) or 0}
+            data = {"data": channels, "total_items": await session.scalar(select(func.count(Channel.id)).where(*filters)) or 0,
+                    "max_page_items": 50, "cur_page": page}
         else:
             data = {"data": channels, "total_items": len(channels)}
     elif action == "create_link":
+        if params["type"] == "vod":
+            match = re.fullmatch(r"(?:ffmpeg )?vod_([1-9][0-9]{0,18})", params.get("cmd", ""))
+            if not match:
+                raise HTTPException(status_code=400, detail="Invalid movie command")
+            movie = await session.get(Vod, int(match.group(1)))
+            if movie is None or not movie.is_active or movie.media_type != "movie":
+                raise HTTPException(status_code=404, detail="Movie not found")
+            return Response(content=json.dumps({"js": {"cmd": f"ffmpeg {movie.stream_url}"}}),
+                            media_type="application/json", headers=headers)
         match = re.fullmatch(r"(?:ffmpeg )?channel_([1-9][0-9]{0,18})", params.get("cmd", ""))
         if not match:
             raise HTTPException(status_code=400, detail="Invalid channel command")
@@ -820,7 +980,30 @@ async def stalker_api(token: str, request: Request, session: DatabaseSession) ->
 
 @app.get("/admin/subscribers", response_model=list[SubscriberResponse], tags=["admin"])
 async def list_subscribers(session: DatabaseSession, _: AdminAccess) -> list[Subscriber]:
-    return list((await session.scalars(select(Subscriber).order_by(Subscriber.id.desc()))).all())
+    try:
+        return list((await session.scalars(select(Subscriber).order_by(Subscriber.id.desc()))).all())
+    except SQLAlchemyError:
+        logger.exception("Customer list database query failed")
+        raise HTTPException(status_code=503, detail="Customer database unavailable") from None
+
+
+@app.post("/admin/subscribers/portal-check", response_model=PortalCheckResponse, tags=["admin"])
+async def check_subscriber_portal(payload: PortalCheckRequest, response: Response, session: DatabaseSession,
+                                  _: AdminAccess) -> PortalCheckResponse:
+    """Read-only: resolve an existing private link without replacing its credential."""
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    try:
+        row = await session.scalar(select(Subscriber).where(Subscriber.token_hash == token_hash(payload.token)))
+    except SQLAlchemyError:
+        logger.exception("Customer portal check database query failed")
+        raise HTTPException(status_code=503, detail="Customer database unavailable") from None
+    if row is None:
+        raise HTTPException(status_code=404, detail="Private portal URL not found")
+    return PortalCheckResponse(id=row.id, name=row.name, is_active=row.is_active,
+                               expires_at=utc_datetime(row.expires_at),
+                               mac_matches=matching_mac(row, payload.mac_address) is not None,
+                               portal_origin=public_base_url())
 
 
 @app.post("/admin/subscribers", response_model=SubscriberCreated, status_code=201, tags=["admin"])
