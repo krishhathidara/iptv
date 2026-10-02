@@ -193,7 +193,9 @@ async def test_mag_portal_handshake_channels_playback_and_revocation(client, mon
     auth = {"Authorization": f"Bearer {bearer}"}
     assert (await client.get(api, params={**mac, "type": "itv", "action": "get_all_channels"})).status_code == 403
     assert (await client.get(api, params={"mac": "11:22:33:44:55:66", "type": "itv", "action": "get_all_channels"}, headers=auth)).status_code == 403
-    assert (await client.post(api, data={**mac, "type": "stb", "action": "get_profile"}, headers=auth)).json()["js"]["mac"] == mac["mac"]
+    profile = (await client.post(api, data={**mac, "type": "stb", "action": "get_profile"}, headers=auth)).json()["js"]
+    assert profile["mac"] == mac["mac"] and profile["token"] == bearer
+    assert profile["status"] == 0 and profile["blocked"] == "0"
     imported = await client.post("/import-m3u", json={"raw_m3u": "#EXTM3U\n#EXTINF:-1,Test MAG\nhttps://media.example/live.m3u8"})
     assert imported.status_code == 200
     result = await client.get(api, params={**mac, "type": "itv", "action": "get_all_channels"}, headers=auth)
@@ -215,6 +217,17 @@ async def test_mag_portal_handshake_channels_playback_and_revocation(client, mon
     assert (await client.get(api, params={**mac, "type": "vod", "action": "get_categories"}, headers=auth)).status_code == 200
     assert (await client.get(api, params={**mac, "type": "vod", "action": "get_ordered_list"})).status_code == 403
     assert (await client.get(api, params={**mac, "type": "vod", "action": "create_link", "cmd": movie["cmd"]}, headers=auth)).json()["js"]["cmd"] == "ffmpeg https://media.example/movie.mp4"
+    episodes = await client.get(api, params={**mac, "type": "series", "action": "get_ordered_list"}, headers=auth)
+    assert episodes.status_code == 200 and episodes.json()["js"]["total_items"] == 1
+    episode = episodes.json()["js"]["data"][0]
+    assert episode["name"] == "MAG Episode"
+    assert (await client.get(api, params={**mac, "type": "series", "action": "get_categories"}, headers=auth)).json() == {
+        "js": [{"id": "*", "title": "TV episodes", "alias": "all"}]}
+    assert (await client.get(api, params={**mac, "type": "series", "action": "create_link", "cmd": episode["cmd"]}, headers=auth)).json()["js"]["cmd"] == "ffmpeg https://media.example/episode.m3u8"
+    assert (await client.get(api, params={**mac, "type": "series", "action": "create_link", "cmd": movie["cmd"]}, headers=auth)).status_code == 404
+    assert (await client.get(api, params={**mac, "type": "vod", "action": "create_link", "cmd": episode["cmd"]}, headers=auth)).status_code == 404
+    assert (await client.get(api, params={**mac, "type": "series", "action": "create_link", "cmd": "ffmpeg https://evil.example"}, headers=auth)).status_code == 400
+    assert (await client.get(api, params={**mac, "type": "series", "action": "get_ordered_list"})).status_code == 403
     assert (await client.get(api, params={**mac, "type": "vod", "action": "create_link", "cmd": "ffmpeg vod_999999"}, headers=auth)).status_code == 404
     assert (await client.get(api, params={**mac, "type": "vod", "action": "create_link", "cmd": "ffmpeg https://evil.example"}, headers=auth)).status_code == 400
     assert (await client.get(api, params={**mac, "type": "vod", "action": "get_ordered_list", "p": "invalid"}, headers=auth)).status_code == 400
@@ -285,13 +298,15 @@ async def test_opt_in_mac_stalker_server_uses_registered_active_account(client, 
                                                   "token": "", "JsHttpRequest": "1-xml"})).status_code == 200
     assert (await client.get(paths[1], params={"type": "itv", "action": "get_all_channels", "mac": mac})).status_code == 403
     auth = {"Authorization": f"Bearer {bearer}"}
-    assert (await client.get(paths[-1], params={"type": "stb", "action": "get_profile", "mac": mac,
-                                                  "token": bearer})).json()["js"]["mac"] == mac
-    assert "MAG request scope=shared endpoint=/stalker_portal/server/portal.php method=GET action=get_profile status=200" in caplog.text
+    profile = (await client.get(paths[-1], params={"type": "stb", "action": "get_profile", "mac": mac,
+                                                   "token": bearer})).json()["js"]
+    assert profile["mac"] == mac and profile["token"] == bearer
+    assert profile["status"] == 0 and profile["blocked"] == "0"
+    assert "MAG request status=200 type=stb action=get_profile scope=shared endpoint=/stalker_portal/server/portal.php method=GET" in caplog.text
     assert mac not in caplog.text and bearer not in caplog.text
     assert (await client.post(paths[2], data={"type": "stb", "action": "get_profile", "mac": mac,
                                                   "token": bearer})).status_code == 200
-    assert "MAG request scope=shared endpoint=/server/portal.php method=POST action=get_profile status=200" in caplog.text
+    assert "MAG request status=200 type=stb action=get_profile scope=shared endpoint=/server/portal.php method=POST" in caplog.text
     assert (await client.get(paths[0], params={"type": "stb", "action": "get_profile", "mac": mac,
                                                   "token": "wrong"})).status_code == 403
     assert (await client.get(paths[0], params={"type": "stb", "action": "get_profile", "mac": mac,
@@ -309,11 +324,15 @@ async def test_opt_in_mac_stalker_server_uses_registered_active_account(client, 
     genre_ids = {group["title"]: group["id"] for group in genres}
     assert genre_ids["All channels"] == "*"
     assert genre_ids["English News"].isdigit() and genre_ids["Sports"].isdigit()
+    categories = await client.get(paths[1], params={"type": "itv", "action": "get_categories", "mac": mac}, headers=auth)
+    assert categories.status_code == 200 and categories.json()["js"] == genres
     assert all(0 < int(genre_ids[group]) <= 2_147_483_647 for group in ("English News", "Sports"))
     account = (await client.get(paths[1], params={"type": "account_info", "action": "get_main_info", "mac": mac}, headers=auth)).json()["js"]
     assert account["status"] == "active"
     assert datetime.fromisoformat(account["end_date"]) == datetime.fromisoformat(row["expires_at"])
-    channels = (await client.post(paths[2], data={"type": "itv", "action": "get_all_channels", "mac": mac}, headers=auth)).json()["js"]["data"]
+    channel_list = (await client.post(paths[2], data={"type": "itv", "action": "get_all_channels", "mac": mac}, headers=auth)).json()["js"]
+    assert channel_list["channels"] == channel_list["data"]
+    channels = channel_list["data"]
     assert {channel["name"] for channel in channels} == {"Authorized News", "Authorized Sports"}
     news = next(channel for channel in channels if channel["name"] == "Authorized News")
     assert news["tv_genre_id"] == genre_ids["English News"]
@@ -358,6 +377,130 @@ async def test_opt_in_mac_stalker_server_uses_registered_active_account(client, 
     await client.patch(f"/admin/subscribers/{row['id']}", headers=headers, json={"is_active": False})
     assert (await client.get(paths[0], params=query)).status_code == 403
     assert (await client.get(paths[0], params={"type": "itv", "action": "get_all_channels", "mac": mac}, headers=auth)).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_mag_bootstrap_and_optional_catalog_probes_keep_session_required(client, monkeypatch, caplog):
+    key = "long-admin-secret-for-subscriber-tests-1234567890"
+    monkeypatch.setattr(settings, "admin_api_key", key)
+    monkeypatch.setattr(settings, "enable_mac_stalker_portal", True)
+    monkeypatch.setattr(settings, "tv_public_mode", True)
+    mac = "AA:BB:CC:DD:EE:FF"
+    created = (await client.post("/admin/subscribers", headers={"X-Admin-Key": key}, json={
+        "name": "TV", "mac_address": mac, "months": 1,
+    })).json()
+    private = created["mag_portal_url"].removeprefix("http://127.0.0.1:8000").removesuffix("/c/index.html")
+    for api in ("/server/load.php", private + "/portal.php"):
+        handshake = await client.get(api, params={"type": "stb", "action": "handshake", "mac": mac})
+        assert handshake.status_code == 200
+        token = handshake.json()["js"]["token"]
+        auth = {"Authorization": f"Bearer {token}"}
+        for content_type, action in (("stb", "get_modules"), ("stb", "get_localization"),
+                                     ("stb", "get_time"), ("stb", "do_auth"),
+                                     ("radio", "get_categories"), ("radio", "get_ordered_list"),
+                                     ("series", "get_categories"), ("itv", "get_short_epg"),
+                                     ("itv", "get_epg_info"), ("watchdog", "get_events")):
+            query = {"type": content_type, "action": action, "mac": mac}
+            assert (await client.get(api, params=query)).status_code == 403
+            with caplog.at_level("INFO", logger="app.main"):
+                response = await client.get(api, params=query, headers=auth)
+            assert response.status_code == 200, (content_type, action, response.text)
+            assert response.headers["cache-control"] == "no-store"
+            assert response.headers["referrer-policy"] == "no-referrer"
+            assert f"status=200 type={content_type} action={action}" in caplog.text
+            assert "js" in response.json()
+            if action == "get_modules":
+                assert {"tv", "vclub", "sclub"}.issubset(response.json()["js"]["all_modules"])
+            if action == "get_localization":
+                assert response.json()["js"]["time_format"] == "{0}:{1}"
+            if content_type == "radio":
+                assert response.json()["js"] == ([] if action == "get_categories" else {
+                    "data": [], "total_items": 0, "max_page_items": 50, "cur_page": 1})
+            if action == "get_short_epg":
+                assert response.json()["js"] == {"data": []}
+            if action == "get_epg_info":
+                assert response.json()["js"] == {"data": {}}
+            if action == "do_auth":
+                assert response.json()["js"] is True
+            if action == "get_events":
+                assert response.json()["js"]["data"]["msgs"] == 0
+        assert (await client.get(api, params={"mac": mac, "type": "stb", "action": "do_auth",
+                                              "password": "unsupported"}, headers=auth)).status_code == 403
+        assert (await client.get(api, params={"mac": mac, "type": "stb", "action": "get_modules",
+                                              "token": "wrong"}, headers=auth)).status_code == 403
+        assert (await client.get(api, params={"mac": mac, "type": "stb", "action": "get_modules"},
+                                 headers={"Authorization": "Bearer wrong"})).status_code == 403
+        assert (await client.get(api, params={"mac": "11:22:33:44:55:66", "type": "stb",
+                                              "action": "get_modules"}, headers=auth)).status_code == 403
+        assert (await client.get(api, params={"mac": mac, "type": "stb", "action": "invented-action"},
+                                 headers=auth)).status_code == 400
+        assert mac not in caplog.text and token not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_shared_stalker_series_probe_returns_empty_catalog_and_safe_type_logs(client, monkeypatch, caplog):
+    key = "long-admin-secret-for-subscriber-tests-1234567890"
+    monkeypatch.setattr(settings, "admin_api_key", key)
+    monkeypatch.setattr(settings, "enable_mac_stalker_portal", True)
+    monkeypatch.setattr(settings, "tv_public_mode", True)
+    mac = "AA:BB:CC:DD:EE:FF"
+    path = "/server/load.php"
+    created = await client.post("/admin/subscribers", headers={"X-Admin-Key": key}, json={
+        "name": "TV", "mac_address": mac, "months": 1,
+    })
+    assert created.status_code == 201
+    handshake = await client.get(path, params={"type": "stb", "action": "handshake", "mac": mac})
+    assert handshake.status_code == 200
+    token = handshake.json()["js"]["token"]
+    auth = {"Authorization": f"Bearer {token}"}
+    query = {"type": "series", "action": "get_categories", "mac": mac}
+    assert (await client.get(path, params=query)).status_code == 403
+    with caplog.at_level("INFO", logger="app.main"):
+        categories = await client.get(path, params={**query, "token": token})
+        series = await client.post(path, data={"type": "series", "action": "get_ordered_list",
+                                               "p": "0", "mac": mac}, headers=auth)
+        unknown = await client.get(path, params={"type": "secret-value", "action": "get_categories",
+                                                 "mac": mac}, headers=auth)
+    assert categories.status_code == 200 and categories.json() == {"js": []}
+    assert categories.headers["cache-control"] == "no-store"
+    assert series.status_code == 200
+    assert series.json() == {"js": {"data": [], "total_items": 0, "max_page_items": 50, "cur_page": 1}}
+    assert unknown.status_code == 400
+    assert "status=200 type=series action=get_categories" in caplog.text
+    assert "status=200 type=series action=get_ordered_list" in caplog.text
+    assert "status=400 type=other action=get_categories" in caplog.text
+    assert "secret-value" not in caplog.text and mac not in caplog.text and token not in caplog.text
+    movies = await client.get(path, params={**query, "type": "vod"}, headers=auth)
+    assert movies.status_code == 200 and movies.json()["js"][0]["title"] == "All movies"
+    assert (await client.get(path, params={**query, "action": "create_link", "cmd": "ffmpeg vod_1"},
+                             headers=auth)).status_code == 404
+    assert (await client.get(path, params={**query, "action": "get_ordered_list", "p": "invalid"},
+                             headers=auth)).status_code == 400
+    assert (await client.get(path, params={**query, "action": "create_link", "cmd": "vod_1"},
+                             headers=auth)).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_public_tv_logs_rejected_mag_paths_without_exposing_credentials(client, monkeypatch, caplog):
+    monkeypatch.setattr(settings, "tv_public_mode", True)
+    monkeypatch.setattr(settings, "enable_mac_stalker_portal", True)
+    secret = "sensitive-path-or-action"
+    with caplog.at_level("INFO", logger="app.main"):
+        rejected = await client.get("/c/server/load.php", params={
+            "type": "itv", "action": "get_categories", "mac": "AA:BB:CC:DD:EE:FF", "token": secret,
+        })
+        unmatched = await client.get(f"/{secret}/portal.php", params={
+            "type": secret, "action": secret, "mac": "AA:BB:CC:DD:EE:FF",
+        })
+        disabled = await client.get("/server/load.php", params={
+            "type": "itv", "action": "get_categories", "mac": "AA:BB:CC:DD:EE:FF",
+        })
+    assert rejected.status_code == unmatched.status_code == 404
+    assert disabled.status_code == 403
+    assert caplog.text.count("MAG request status=404 type=itv action=get_categories scope=unmatched") == 1
+    assert "MAG request status=404 type=other action=other scope=unmatched" in caplog.text
+    assert "MAG request status=403 type=itv action=get_categories scope=shared endpoint=/server/load.php" in caplog.text
+    assert secret not in caplog.text and "AA:BB:CC:DD:EE:FF" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -419,6 +562,9 @@ async def test_existing_customer_private_stalker_server_supports_portal_php_with
     assert (await client.get(private + "/stalker_portal/server/load.php", params={
         "type": "stb", "action": "get_profile", "mac": mac,
     }, headers={"Authorization": f"Bearer {bearer}"})).json()["js"]["mac"] == mac
+    assert (await client.get(private + "/server/load.php", params={
+        "type": "series", "action": "get_categories", "mac": mac,
+    }, headers={"Authorization": f"Bearer {bearer}"})).json() == {"js": []}
     assert (await client.get(private + "/portal.php", params={
         "type": "itv", "action": "get_all_channels", "mac": mac,
     })).status_code == 403

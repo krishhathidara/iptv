@@ -6,6 +6,7 @@
   var loadMore = document.getElementById("loadMore");
   var liveTab = document.getElementById("liveTab");
   var movieTab = document.getElementById("movieTab");
+  var seriesTab = document.getElementById("seriesTab");
   var playing = document.getElementById("playing");
   var mac, session, channels = [], current = -1, page = 0, loading = false, section = "itv", generation = 0;
   // Private legacy pages use their private API; the shared page uses the
@@ -75,8 +76,9 @@
       })(i);
     }
     loadMore.hidden = channels.length >= total;
-    report(channels.length ? channels.length + " of " + total + (section === "vod" ? " movies ready" : " live channels ready") :
-      (section === "vod" ? "No movies available." : "No active channels available."));
+    var label = section === "vod" ? " movies" : section === "series" ? " TV episodes" : " live channels";
+    report(channels.length ? channels.length + " of " + total + label + " ready" :
+      (section === "vod" ? "No movies available." : section === "series" ? "No TV episodes available." : "No active channels available."));
     if (from === 0 && list.querySelector("button")) list.querySelector("button").focus();
   }
   function nextPage() {
@@ -102,17 +104,18 @@
     loading = false;
     list.innerHTML = "";
     loadMore.hidden = true;
-    report("Loading " + (type === "vod" ? "movies" : "live TV") + "…");
+    report("Loading " + (type === "vod" ? "movies" : type === "series" ? "TV episodes" : "live TV") + "…");
     nextPage();
   }
   liveTab.onclick = function () { selectSection("itv"); };
   movieTab.onclick = function () { selectSection("vod"); };
+  seriesTab.onclick = function () { selectSection("series"); };
   loadMore.onclick = nextPage;
   document.onkeydown = function (event) {
     var key = event.keyCode || event.which;
     if (key === 8 || key === 27 || key === 461) { event.preventDefault(); if (current !== -1) stop(); return; }
     if (key !== 38 && key !== 40) return;
-    var buttons = [liveTab, movieTab].concat(Array.prototype.slice.call(list.getElementsByTagName("button")));
+    var buttons = [liveTab, movieTab, seriesTab].concat(Array.prototype.slice.call(list.getElementsByTagName("button")));
     if (!loadMore.hidden) buttons.push(loadMore);
     if (!buttons.length) return;
     var focused = -1;

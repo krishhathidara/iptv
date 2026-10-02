@@ -159,8 +159,31 @@ PRIVATE_STALKER_API_PATH = re.compile(
 )
 STALKER_ACTIONS = {
     "handshake", "get_profile", "get_main_info", "get_genres", "get_all_channels",
-    "get_ordered_list", "get_categories", "create_link",
+    "get_ordered_list", "get_categories", "create_link", "get_modules",
+    "get_localization", "get_time", "do_auth", "get_short_epg", "get_epg_info", "get_events",
 }
+STALKER_TYPES = {"stb", "account_info", "itv", "vod", "series", "radio", "watchdog"}
+
+
+def _log_stalker_request(request: Request, status_code: int) -> None:
+    """Log only allowlisted protocol labels; never log URLs, credentials or MACs."""
+    path = request.url.path
+    private_match = PRIVATE_STALKER_API_PATH.fullmatch(path)
+    if path in SHARED_STALKER_PATHS:
+        scope, endpoint = "shared", path
+    elif private_match:
+        scope, endpoint = "private", "/" + private_match.group("endpoint")
+    elif path.endswith(("/portal.php", "/load.php")):
+        # A client may construct the wrong path. It must still be diagnosable
+        # even if the public-TV gate rejects it before routing.
+        scope, endpoint = "unmatched", "unmatched"
+    else:
+        return
+    action = getattr(request.state, "stalker_action", request.query_params.get("action", ""))
+    content_type = getattr(request.state, "stalker_type", request.query_params.get("type", ""))
+    logger.info("MAG request status=%d type=%s action=%s scope=%s endpoint=%s method=%s",
+                status_code, content_type if content_type in STALKER_TYPES else "other",
+                action if action in STALKER_ACTIONS else "other", scope, endpoint, request.method)
 
 
 @app.middleware("http")
@@ -188,22 +211,14 @@ async def restrict_public_tv(request: Request, call_next):
             or (re.fullmatch(r"/admin/subscribers/[1-9][0-9]*/rotate", path) and method == "POST")
         )
         if not allowed:
+            _log_stalker_request(request, 404)
             return Response(status_code=404)
         if path in {"/import-m3u", "/vod/import"} and method == "POST":
             supplied = request.headers.get("x-admin-key", "")
             if not settings.admin_api_key or not secrets.compare_digest(supplied, settings.admin_api_key):
                 return Response(status_code=401, headers={"WWW-Authenticate": "ApiKey"})
     response = await call_next(request)
-    private_match = PRIVATE_STALKER_API_PATH.fullmatch(request.url.path)
-    if request.method in {"GET", "POST"} and (request.url.path in SHARED_STALKER_PATHS or private_match):
-        # Uvicorn access logging is off: log only fixed labels, never URL queries,
-        # MACs, private path tokens, headers, or upstream stream URLs.
-        action = getattr(request.state, "stalker_action", request.query_params.get("action", ""))
-        logger.info("MAG request scope=%s endpoint=%s method=%s action=%s status=%d",
-                    "shared" if request.url.path in SHARED_STALKER_PATHS else "private",
-                    request.url.path if request.url.path in SHARED_STALKER_PATHS else "/" + private_match.group("endpoint"),
-                    request.method, action if action in STALKER_ACTIONS else "other",
-                    response.status_code)
+    _log_stalker_request(request, response.status_code)
     return response
 
 DatabaseSession = Annotated[AsyncSession, Depends(get_db)]
@@ -823,6 +838,7 @@ async def _stalker_params(request: Request) -> dict[str, str]:
         form = await request.form()
         params.update({key: str(value) for key, value in form.items() if isinstance(value, str)})
     request.state.stalker_action = params.get("action", "")
+    request.state.stalker_type = params.get("type", "")
     return params
 
 
@@ -914,19 +930,49 @@ async def _stalker_response(subscriber: Subscriber, request: Request, session: A
     if not valid_session(subscriber, mac, bearer):
         raise HTTPException(status_code=403, detail="MAG session required; handshake again")
     if (params.get("type"), action) not in {
-        ("stb", "get_profile"), ("account_info", "get_main_info"),
-        ("itv", "get_genres"), ("itv", "get_all_channels"),
+        ("stb", "get_profile"), ("stb", "get_modules"), ("stb", "get_localization"),
+        ("stb", "get_time"), ("stb", "do_auth"), ("account_info", "get_main_info"),
+        ("itv", "get_genres"), ("itv", "get_categories"), ("itv", "get_all_channels"),
         ("itv", "get_ordered_list"), ("itv", "create_link"),
+        ("itv", "get_short_epg"), ("itv", "get_epg_info"),
         ("vod", "get_categories"), ("vod", "get_ordered_list"), ("vod", "create_link"),
+        ("series", "get_categories"), ("series", "get_ordered_list"), ("series", "create_link"),
+        ("radio", "get_categories"), ("radio", "get_ordered_list"),
+        ("watchdog", "get_events"),
     }:
         raise HTTPException(status_code=400, detail="Unsupported MAG action")
 
     data: Any
     if action == "get_profile":
-        data = {"id": subscriber.id, "name": subscriber.name, "mac": mac, "status": "active"}
+        # Native Stalker clients may refresh their bearer from get_profile.
+        # Return the validated session, not a new identity or an anonymous token.
+        data = {"id": subscriber.id, "name": subscriber.name, "mac": mac, "status": 0,
+                "blocked": "0", "token": bearer}
+    elif action == "get_modules":
+        # Advertise only catalog modules we actually serve. Stalker clients
+        # inspect these keys during startup before loading content.
+        data = {"all_modules": ["tv", "vclub", "sclub", "account"],
+                "switchable_modules": [], "disabled_modules": [],
+                "restricted_modules": [], "template": "default"}
+    elif action == "get_localization":
+        data = {"time_format": "{0}:{1}"}
+    elif action == "get_time":
+        data = {"time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")}
+    elif action == "do_auth":
+        # This MAC-only portal has no subscriber login/password credentials.
+        # An explicit password must not be silently treated as authenticated.
+        if params.get("login") or params.get("password"):
+            raise HTTPException(status_code=403, detail="Account credentials are not supported")
+        data = True
+    elif action == "get_events":
+        data = {"data": {"msgs": 0, "additional_services_on": 0}}
+    elif action == "get_short_epg":
+        data = {"data": []}
+    elif action == "get_epg_info":
+        data = {"data": {}}
     elif action == "get_main_info":
         data = {"status": "active", "end_date": utc_datetime(subscriber.expires_at).isoformat()}
-    elif action == "get_genres":
+    elif params["type"] == "itv" and action in ("get_genres", "get_categories"):
         group_ids = await _stalker_genres(session)
         data = [{"id": "*", "title": "All channels", "alias": "all", "censored": "0"}] + [
             {"id": genre_id, "title": group, "alias": group, "censored": "0"}
@@ -934,8 +980,17 @@ async def _stalker_response(subscriber: Subscriber, request: Request, session: A
         ]
     elif params["type"] == "vod" and action == "get_categories":
         data = [{"id": "*", "title": "All movies", "alias": "all"}]
+    elif params["type"] == "series" and action == "get_categories":
+        # Direct-stream TV imports are episodes; there is no season/show hierarchy.
+        data = ([{"id": "*", "title": "TV episodes", "alias": "all"}]
+                if await session.scalar(select(func.count(Vod.id)).where(
+                    Vod.is_active.is_(True), Vod.media_type == "tv")) else [])
+    elif params["type"] == "radio":
+        # No radio catalog is imported; return valid empty shapes, not 400s.
+        data = [] if action == "get_categories" else {
+            "data": [], "total_items": 0, "max_page_items": 50, "cur_page": 1}
     elif action in ("get_all_channels", "get_ordered_list"):
-        if params["type"] == "vod":
+        if params["type"] in {"vod", "series"}:
             try:
                 page = int(params.get("p", "1"))
             except ValueError:
@@ -943,7 +998,7 @@ async def _stalker_response(subscriber: Subscriber, request: Request, session: A
             if not 0 <= page <= 100000:
                 raise HTTPException(status_code=400, detail="Invalid page")
             page = max(1, page)
-            filters = [Vod.is_active.is_(True), Vod.media_type == "movie"]
+            filters = [Vod.is_active.is_(True), Vod.media_type == ("movie" if params["type"] == "vod" else "tv")]
             rows = (await session.execute(
                 select(Vod.id, Vod.title, Vod.poster_path).where(*filters)
                 .order_by(Vod.normalized_title, Vod.id).limit(50).offset((page - 1) * 50)
@@ -987,15 +1042,17 @@ async def _stalker_response(subscriber: Subscriber, request: Request, session: A
             data = {"data": channels, "total_items": await session.scalar(select(func.count(Channel.id)).where(*filters)) or 0,
                     "max_page_items": 50, "cur_page": page}
         else:
-            data = {"data": channels, "total_items": len(channels)}
+            # Both js.data and js.channels are used for get_all_channels by
+            # Stalker clients. Keep the existing data shape for older clients.
+            data = {"data": channels, "channels": channels, "total_items": len(channels)}
     elif action == "create_link":
-        if params["type"] == "vod":
+        if params["type"] in {"vod", "series"}:
             match = re.fullmatch(r"(?:ffmpeg )?vod_([1-9][0-9]{0,18})", params.get("cmd", ""))
             if not match:
-                raise HTTPException(status_code=400, detail="Invalid movie command")
+                raise HTTPException(status_code=400, detail="Invalid title command")
             movie = await session.get(Vod, int(match.group(1)))
-            if movie is None or not movie.is_active or movie.media_type != "movie":
-                raise HTTPException(status_code=404, detail="Movie not found")
+            if movie is None or not movie.is_active or movie.media_type != ("movie" if params["type"] == "vod" else "tv"):
+                raise HTTPException(status_code=404, detail="Title not found")
             return Response(content=json.dumps({"js": {"cmd": f"ffmpeg {movie.stream_url}"}}),
                             media_type="application/json", headers=headers)
         match = re.fullmatch(r"(?:ffmpeg )?channel_([1-9][0-9]{0,18})", params.get("cmd", ""))

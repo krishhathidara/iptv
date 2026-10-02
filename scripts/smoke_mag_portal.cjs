@@ -20,7 +20,7 @@ function element() {
     focus() { activeElement = this; },
   };
 }
-for (const id of ["message", "channels", "playing", "loadMore", "liveTab", "movieTab"]) elements.set(id, element());
+for (const id of ["message", "channels", "playing", "loadMore", "liveTab", "movieTab", "seriesTab"]) elements.set(id, element());
 const list = elements.get("channels");
 const loadMore = elements.get("loadMore");
 loadMore.hidden = true;
@@ -45,9 +45,11 @@ XMLHttpRequest.prototype.send = function () {
   if (action === "handshake") js = { token: "test-session" };
   else if (action === "get_ordered_list") {
     const page = Number(url.searchParams.get("p"));
-    const available = url.searchParams.get("type") === "vod" ? [{ name: "Test Movie", cmd: "ffmpeg vod_1" }] : titles;
+    const available = url.searchParams.get("type") === "vod" ? [{ name: "Test Movie", cmd: "ffmpeg vod_1" }] :
+      url.searchParams.get("type") === "series" ? [{ name: "Test Episode", cmd: "ffmpeg vod_2" }] : titles;
     js = { data: available.slice((page - 1) * 50, page * 50), total_items: available.length };
-  } else if (action === "create_link") js = { cmd: url.searchParams.get("type") === "vod" ? "ffmpeg https://media.example/movie.mp4" : "ffmpeg https://media.example/test.m3u8" };
+  } else if (action === "create_link") js = { cmd: url.searchParams.get("type") === "vod" ? "ffmpeg https://media.example/movie.mp4" :
+    url.searchParams.get("type") === "series" ? "ffmpeg https://media.example/episode.mp4" : "ffmpeg https://media.example/test.m3u8" };
   else throw Error(`Unexpected action: ${action}`);
   this.status = 200;
   this.readyState = 4;
@@ -94,6 +96,13 @@ assert.equal(requests[5].url.searchParams.get("type"), "vod");
 assert.equal(playback[1], "ffmpeg https://media.example/movie.mp4");
 elements.get("liveTab").onclick();
 assert.equal(requests[6].url.searchParams.get("type"), "itv");
+elements.get("seriesTab").onclick();
+assert.equal(requests[7].url.searchParams.get("type"), "series");
+assert.equal(list.getElementsByTagName("button").length, 1);
+list.getElementsByTagName("button")[0].onclick();
+assert.equal(requests[8].url.searchParams.get("type"), "series");
+assert.equal(playback[2], "ffmpeg https://media.example/episode.mp4");
+assert.match(elements.get("message").textContent, /Playing Test Episode/);
 const minimalElements = new Map();
 for (const id of elements.keys()) minimalElements.set(id, element());
 vm.runInNewContext(script, {
@@ -102,10 +111,10 @@ vm.runInNewContext(script, {
     get activeElement() { return activeElement; } },
   location: { pathname: "/stalker/secret/c/index.html" }, XMLHttpRequest, URL, Math, JSON, String, Array, Number,
 }, { filename: "mag.js" });
-assert.equal(requests[7].action, "handshake");
-assert.equal(requests[8].action, "get_ordered_list");
+assert.equal(requests[9].action, "handshake");
+assert.equal(requests[10].action, "get_ordered_list");
 minimalElements.get("channels").getElementsByTagName("button")[0].onclick();
-assert.equal(playback[2], "ffmpeg https://media.example/test.m3u8");
+assert.equal(playback[3], "ffmpeg https://media.example/test.m3u8");
 nextFailure = 403;
 minimalElements.get("movieTab").onclick();
 assert.match(minimalElements.get("message").textContent, /STBEmu profile MAC.*403|403.*STBEmu profile MAC/);
@@ -127,4 +136,4 @@ assert.equal(requests[sharedStart + 1].url.pathname, "/server/load.php");
 sharedElements.get("movieTab").onclick();
 sharedElements.get("channels").getElementsByTagName("button")[0].onclick();
 assert.equal(playback.at(-1), "ffmpeg https://media.example/movie.mp4");
-console.log("PASS: MAG mock handshake, pagination, MAC/session headers, live and movie playback, Back key");
+console.log("PASS: MAG mock handshake, pagination, MAC/session headers, live, movie and episode playback, Back key");
