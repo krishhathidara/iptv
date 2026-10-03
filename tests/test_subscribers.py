@@ -334,6 +334,7 @@ async def test_opt_in_mac_stalker_server_uses_registered_active_account(client, 
     assert channel_list["channels"] == channel_list["data"]
     channels = channel_list["data"]
     assert {channel["name"] for channel in channels} == {"Authorized News", "Authorized Sports"}
+    assert all(channel["use_load_balancing"] == 0 for channel in channels)
     news = next(channel for channel in channels if channel["name"] == "Authorized News")
     assert news["tv_genre_id"] == genre_ids["English News"]
     assert isinstance(news["id"], str) and isinstance(news["number"], str)
@@ -341,6 +342,7 @@ async def test_opt_in_mac_stalker_server_uses_registered_active_account(client, 
     filtered = (await client.get(paths[3], params={"type": "itv", "action": "get_ordered_list", "genre": genre_ids["Sports"], "mac": mac}, headers=auth)).json()["js"]
     assert filtered["total_items"] == 1 and filtered["data"][0]["name"] == "Authorized Sports"
     assert filtered["data"][0]["tv_genre_id"] == genre_ids["Sports"]
+    assert filtered["data"][0]["use_load_balancing"] == 0
     by_name = (await client.get(paths[3], params={"type": "itv", "action": "get_ordered_list", "genre": "Sports", "mac": mac}, headers=auth)).json()["js"]
     assert by_name["total_items"] == 1
     by_category = (await client.get(paths[3], params={"type": "itv", "action": "get_ordered_list", "category": genre_ids["Sports"], "mac": mac}, headers=auth)).json()["js"]

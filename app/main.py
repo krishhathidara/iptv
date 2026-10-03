@@ -1040,7 +1040,10 @@ async def _stalker_response(subscriber: Subscriber, request: Request, session: A
             channels.append({"id": str(channel_id), "name": name, "number": str(index + 1),
                              "logo": logo or "", "cmd": f"ffmpeg channel_{channel_id}",
                              "use_http_tmp_link": "1", "xmltv_id": tvg_id or "", "tv_archive_duration": 0,
-                             "tv_genre_id": group_ids.get(selected_group, "*")})
+                             "tv_genre_id": group_ids.get(selected_group, "*"),
+                             # There is no stream balancer; some Stalker clients
+                             # require this flag when parsing a channel record.
+                             "use_load_balancing": 0})
         if action == "get_ordered_list":
             data = {"data": channels, "total_items": await session.scalar(select(func.count(Channel.id)).where(*filters)) or 0,
                     "max_page_items": 50, "cur_page": page}
