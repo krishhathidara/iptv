@@ -504,6 +504,45 @@ async def test_public_tv_logs_rejected_mag_paths_without_exposing_credentials(cl
 
 
 @pytest.mark.asyncio
+async def test_stalker_cookie_only_session_and_conflicting_credentials(client, monkeypatch, caplog):
+    key = "long-admin-secret-for-subscriber-tests-1234567890"
+    monkeypatch.setattr(settings, "admin_api_key", key)
+    monkeypatch.setattr(settings, "enable_mac_stalker_portal", True)
+    monkeypatch.setattr(settings, "tv_public_mode", True)
+    mac = "AA:BB:CC:DD:EE:FF"
+    created = (await client.post("/admin/subscribers", headers={"X-Admin-Key": key}, json={
+        "name": "Cookie STB", "mac_address": mac, "months": 1,
+    })).json()
+    private = created["mag_portal_url"].removeprefix("http://127.0.0.1:8000").removesuffix("/c/index.html")
+    for path in ("/portal.php", private + "/server/load.php"):
+        handshake = await client.get(path, params={"type": "stb", "action": "handshake"},
+                                     headers={"Cookie": "mac=AA%3ABB%3ACC%3ADD%3AEE%3AFF"})
+        assert handshake.status_code == 200
+        token = handshake.json()["js"]["token"]
+        query = {"type": "stb", "action": "get_profile"}
+        cookie = {"Cookie": f"mac=AA%3ABB%3ACC%3ADD%3AEE%3AFF; token={token}"}
+        with caplog.at_level("INFO", logger="app.main"):
+            profile = await client.get(path, params=query, headers=cookie)
+            assert profile.status_code == 200
+            assert profile.json()["js"]["token"] == token
+            assert (await client.post(path, data={"type": "itv", "action": "get_genres"},
+                                      headers=cookie)).status_code == 200
+            assert (await client.get(path, params=query,
+                                     headers={**cookie, "Authorization": f"Bearer {token}"})).status_code == 200
+            assert (await client.get(path, params={**query, "token": token},
+                                     headers=cookie)).status_code == 200
+            assert (await client.get(path, params={**query, "token": "wrong"},
+                                     headers=cookie)).status_code == 403
+            assert (await client.get(path, params=query,
+                                     headers={**cookie, "Authorization": "Bearer wrong"})).status_code == 403
+            assert (await client.get(path, params=query,
+                                     headers={"Cookie": "mac=AA%3ABB%3ACC%3ADD%3AEE%3AFF; token=wrong"})).status_code == 403
+            assert (await client.get(path, params=query,
+                                     headers={"Cookie": f"mac=11%3A22%3A33%3A44%3A55%3A66; token={token}"})).status_code in (403, 404)
+        assert token not in caplog.text and mac not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_shared_portal_settings_are_admin_only_and_stable_across_accounts(client, monkeypatch):
     key = "long-admin-secret-for-subscriber-tests-1234567890"
     monkeypatch.setattr(settings, "admin_api_key", key)

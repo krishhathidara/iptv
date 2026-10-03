@@ -921,12 +921,15 @@ async def _stalker_response(subscriber: Subscriber, request: Request, session: A
 
     authorization = request.headers.get("authorization", "")
     bearer = authorization[7:] if authorization.lower().startswith("bearer ") else None
-    # Some native players forward the issued token as a query/form parameter.
-    # Never accept two different session identities in one request.
+    # Native Stalker clients may forward the issued token in a cookie rather
+    # than an Authorization header. Reject conflicting session identities.
     param_token = params.get("token")
-    if bearer and param_token and not secrets.compare_digest(bearer, param_token):
+    cookie_token = request.cookies.get("token")
+    supplied_tokens = [token for token in (bearer, param_token, cookie_token) if token]
+    if supplied_tokens and any(not secrets.compare_digest(supplied_tokens[0], token)
+                               for token in supplied_tokens[1:]):
         raise HTTPException(status_code=403, detail="Conflicting MAG session tokens")
-    bearer = bearer or param_token
+    bearer = supplied_tokens[0] if supplied_tokens else None
     if not valid_session(subscriber, mac, bearer):
         raise HTTPException(status_code=403, detail="MAG session required; handshake again")
     if (params.get("type"), action) not in {
